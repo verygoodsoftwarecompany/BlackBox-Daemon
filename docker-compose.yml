@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  blackbox-daemon:
+    build: .
+    container_name: blackbox-daemon-test
+    ports:
+      - "8080:8080"  # API port
+      - "9090:9090"  # Metrics port
+    environment:
+      - NODE_NAME=docker-node
+      - POD_NAMESPACE=default
+      - BLACKBOX_API_KEY=test-api-key-12345
+      - BLACKBOX_BUFFER_WINDOW_SIZE=60s
+      - BLACKBOX_COLLECTION_INTERVAL=1s
+      - BLACKBOX_API_PORT=8080
+      - BLACKBOX_METRICS_PORT=9090
+      - BLACKBOX_SWAGGER_ENABLE=true
+      - BLACKBOX_OUTPUT_FORMATTERS=default,json,csv
+      - BLACKBOX_OUTPUT_PATH=/var/log/blackbox
+      - BLACKBOX_LOG_LEVEL=info
+      - BLACKBOX_LOG_JSON=true
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - ./logs:/var/log/blackbox
+    privileged: true  # Required to read system metrics
+    network_mode: host  # Required for accurate network monitoring
+    restart: unless-stopped
+    
+  # Test sidecar simulator
+  test-sidecar:
+    image: curlimages/curl:latest
+    container_name: test-sidecar
+    depends_on:
+      - blackbox-daemon
+    command: >
+      sh -c "
+      while true; do
+        echo 'Sending test telemetry...';
+        curl -X POST http://localhost:8080/api/v1/telemetry \
+          -H 'Authorization: Bearer test-api-key-12345' \
+          -H 'Content-Type: application/json' \
+          -d '{
+            \"pod_name\": \"test-pod\",
+            \"namespace\": \"default\",
+            \"runtime\": \"test\",
+            \"data\": {
+              \"cpu_usage\": 45.2,
+              \"memory_usage\": 1024000000,
+              \"active_threads\": 12,
+              \"gc_count\": 5
+            }
+          }';
+        echo;
+        sleep 10;
+      done
+      "
+    network_mode: host
+    restart: unless-stopped
+
+  # Prometheus for metrics collection (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    network_mode: host
+    restart: unless-stopped

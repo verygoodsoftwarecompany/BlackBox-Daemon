@@ -1,0 +1,186 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: blackbox-daemon
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: blackbox-daemon
+rules:
+- apiGroups: [""]
+  resources: ["pods", "events"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: blackbox-daemon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: blackbox-daemon
+subjects:
+- kind: ServiceAccount
+  name: blackbox-daemon
+  namespace: kube-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: blackbox-daemon-config
+  namespace: kube-system
+type: Opaque
+stringData:
+  BLACKBOX_API_KEY: "your-secure-api-key-here"  # Change this to a secure random key
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: blackbox-daemon
+  namespace: kube-system
+  labels:
+    app: blackbox-daemon
+spec:
+  selector:
+    matchLabels:
+      app: blackbox-daemon
+  template:
+    metadata:
+      labels:
+        app: blackbox-daemon
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: blackbox-daemon
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: blackbox-daemon
+        image: blackbox-daemon:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: BLACKBOX_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: blackbox-daemon-config
+              key: BLACKBOX_API_KEY
+        - name: BLACKBOX_BUFFER_WINDOW_SIZE
+          value: "60s"
+        - name: BLACKBOX_COLLECTION_INTERVAL
+          value: "1s"
+        - name: BLACKBOX_API_PORT
+          value: "8080"
+        - name: BLACKBOX_METRICS_PORT
+          value: "9090"
+        - name: BLACKBOX_SWAGGER_ENABLE
+          value: "false"
+        - name: BLACKBOX_OUTPUT_FORMATTERS
+          value: "default,json"
+        - name: BLACKBOX_OUTPUT_PATH
+          value: "/var/log/blackbox"
+        - name: BLACKBOX_LOG_LEVEL
+          value: "info"
+        - name: BLACKBOX_LOG_JSON
+          value: "true"
+        ports:
+        - containerPort: 8080
+          hostPort: 8080
+          name: api
+          protocol: TCP
+        - containerPort: 9090
+          hostPort: 9090
+          name: metrics
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: log-storage
+          mountPath: /var/log/blackbox
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: log-storage
+        hostPath:
+          path: /var/log/blackbox
+          type: DirectoryOrCreate
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blackbox-daemon-metrics
+  namespace: kube-system
+  labels:
+    app: blackbox-daemon
+    component: metrics
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9090
+    targetPort: 9090
+    protocol: TCP
+    name: metrics
+  selector:
+    app: blackbox-daemon
