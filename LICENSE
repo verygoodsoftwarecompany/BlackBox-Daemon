@@ -1,10 +1,12 @@
+SPDX-License-Identifier: AGPL-3.0-only
+
 Copyright (c) 2025 William Mortl
 
 This software is licensed under the terms of the GNU Affero General Public License,
 Version 3.0 (AGPL-3.0). The full license text follows.
 
-The copyright holder reserves the right to offer this work,
-or derivative works thereof, under different license terms,
+The copyright holder reserves the right to license this work, or
+derivative works thereof, under different terms in the future,
 including commercial or proprietary licenses.
 
 Contributions to this project are accepted under the terms of the
@@ -12,6 +14,8 @@ project’s Contributor License Agreement (CLA), which grants the project
 maintainers the right to relicense contributed code under different terms
 in the future. Contributors retain copyright ownership of
 their contributions.
+
+All rights not expressly granted under the AGPLv3 or Contributor License Agreement (CLA) are reserved.
 
 ---------------------------------------------------------------------
 
