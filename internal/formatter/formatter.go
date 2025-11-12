@@ -5,13 +5,10 @@ package formatter
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/verygoodsoftwarecompany/blackbox-daemon/pkg/emitter"
 	"github.com/verygoodsoftwarecompany/blackbox-daemon/pkg/types"
 )
 
@@ -22,23 +19,17 @@ type Formatter interface {
 	Name() string
 }
 
-// Destination defines where formatted output should be written (files, HTTP endpoints, etc.).
-type Destination interface {
-	Write(data []byte) error
-	Close() error
-}
-
 // FormatterChain manages multiple formatters and their destinations, allowing
 // telemetry data to be simultaneously output in different formats to different locations.
 type FormatterChain struct {
 	formatters []FormatterConfig
 }
 
-// FormatterConfig combines a formatter with its destinations, defining how
-// data should be formatted and where it should be sent.
+// FormatterConfig combines a formatter with its emitters, defining how
+// data should be formatted and where it should be emitted.
 type FormatterConfig struct {
-	Formatter    Formatter
-	Destinations []Destination
+	Formatter Formatter
+	Emitters  []emitter.Emitter
 }
 
 // NewFormatterChain creates a new formatter chain with no configured formatters.
@@ -48,17 +39,17 @@ func NewFormatterChain() *FormatterChain {
 	}
 }
 
-// AddFormatter adds a formatter with its destinations to the chain, allowing
-// the same data to be formatted and sent to multiple destinations.
-func (fc *FormatterChain) AddFormatter(formatter Formatter, destinations ...Destination) {
+// AddFormatter adds a formatter with its emitters to the chain, allowing
+// the same data to be formatted and emitted to multiple destinations.
+func (fc *FormatterChain) AddFormatter(formatter Formatter, emitters ...emitter.Emitter) {
 	fc.formatters = append(fc.formatters, FormatterConfig{
-		Formatter:    formatter,
-		Destinations: destinations,
+		Formatter: formatter,
+		Emitters:  emitters,
 	})
 }
 
 // Process runs all formatters in the chain for the given incident, formatting the data
-// with each formatter and writing to their respective destinations.
+// with each formatter and emitting to their respective destinations.
 func (fc *FormatterChain) Process(entries []types.TelemetryEntry, incident types.IncidentReport) error {
 	for _, config := range fc.formatters {
 		data, err := config.Formatter.Format(entries, incident)
@@ -66,27 +57,27 @@ func (fc *FormatterChain) Process(entries []types.TelemetryEntry, incident types
 			return fmt.Errorf("formatter %s failed: %w", config.Formatter.Name(), err)
 		}
 
-		for _, dest := range config.Destinations {
-			if err := dest.Write(data); err != nil {
-				return fmt.Errorf("failed to write to destination: %w", err)
+		for _, emit := range config.Emitters {
+			if err := emit.Emit(data); err != nil {
+				return fmt.Errorf("failed to emit to %s: %w", emit.Name(), err)
 			}
 		}
 	}
 	return nil
 }
 
-// Close closes all destinations in the chain, ensuring resources are properly cleaned up.
+// Close closes all emitters in the chain, ensuring resources are properly cleaned up.
 func (fc *FormatterChain) Close() error {
 	var errors []string
 	for _, config := range fc.formatters {
-		for _, dest := range config.Destinations {
-			if err := dest.Close(); err != nil {
+		for _, emit := range config.Emitters {
+			if err := emit.Close(); err != nil {
 				errors = append(errors, err.Error())
 			}
 		}
 	}
 	if len(errors) > 0 {
-		return fmt.Errorf("errors closing destinations: %s", strings.Join(errors, "; "))
+		return fmt.Errorf("errors closing emitters: %s", strings.Join(errors, "; "))
 	}
 	return nil
 }
@@ -204,121 +195,24 @@ func (cf *CSVFormatter) Format(entries []types.TelemetryEntry, incident types.In
 	return []byte(output.String()), nil
 }
 
-// File Destination
-
-// FileDestination writes output to a file with automatic directory creation
-// and proper file handle management.
-type FileDestination struct {
-	file     *os.File
-	filePath string
-}
-
-// NewFileDestination creates a new file destination, creating directories as needed
-// and opening the file in append mode.
-func NewFileDestination(filePath string) (*FileDestination, error) {
-	// Ensure directory exists
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file %s: %w", filePath, err)
-	}
-
-	return &FileDestination{
-		file:     file,
-		filePath: filePath,
-	}, nil
-}
-
-// Write writes data to the file and syncs to ensure data reaches disk.
-func (fd *FileDestination) Write(data []byte) error {
-	_, err := fd.file.Write(data)
-	if err != nil {
-		return fmt.Errorf("failed to write to file %s: %w", fd.filePath, err)
-	}
-	return fd.file.Sync() // Ensure data is written to disk
-}
-
-// Close closes the file handle, flushing any buffered data.
-func (fd *FileDestination) Close() error {
-	if fd.file != nil {
-		return fd.file.Close()
-	}
-	return nil
-}
-
-// Stdout Destination
-
-// StdoutDestination writes output to standard output for debugging and development.
-type StdoutDestination struct{}
-
-// NewStdoutDestination creates a new stdout destination
-func NewStdoutDestination() *StdoutDestination {
-	return &StdoutDestination{}
-}
-
-// Write writes data to stdout
-func (sd *StdoutDestination) Write(data []byte) error {
-	_, err := os.Stdout.Write(data)
-	return err
-}
-
-// Close is a no-op for stdout
-func (sd *StdoutDestination) Close() error {
-	return nil
-}
-
-// HTTP Destination
-
-// HTTPDestination sends output to an HTTP endpoint
-type HTTPDestination struct {
-	url    string
-	client *http.Client
-}
-
-// NewHTTPDestination creates a new HTTP destination
-func NewHTTPDestination(url string) *HTTPDestination {
-	return &HTTPDestination{
-		url: url,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
-}
-
-// Write sends data to the HTTP endpoint
-func (hd *HTTPDestination) Write(data []byte) error {
-	resp, err := hd.client.Post(hd.url, "application/json", strings.NewReader(string(data)))
-	if err != nil {
-		return fmt.Errorf("failed to post to %s: %w", hd.url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP error %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
-}
-
-// Close is a no-op for HTTP destination
-func (hd *HTTPDestination) Close() error {
-	return nil
-}
-
 // Helper functions for creating formatter chains from configuration
 
-// CreateFormatterChain creates a formatter chain from configuration strings
-func CreateFormatterChain(formatters []string, outputPath string) (*FormatterChain, error) {
+// CreateFormatterChain creates a formatter chain from configuration strings and emitter configs
+func CreateFormatterChain(formatters []string, emitterConfigs []emitter.EmitterConfig) (*FormatterChain, error) {
 	chain := NewFormatterChain()
+	
+	// Create emitters from configuration
+	var emitters []emitter.Emitter
+	for _, config := range emitterConfigs {
+		emit, err := emitter.CreateEmitter(config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create emitter: %w", err)
+		}
+		emitters = append(emitters, emit)
+	}
 
 	for _, formatterName := range formatters {
 		var formatter Formatter
-		var destinations []Destination
 
 		// Create formatter
 		switch strings.ToLower(formatterName) {
@@ -332,25 +226,8 @@ func CreateFormatterChain(formatters []string, outputPath string) (*FormatterCha
 			return nil, fmt.Errorf("unknown formatter: %s", formatterName)
 		}
 
-		// Create destinations
-		if outputPath == "stdout" {
-			destinations = append(destinations, NewStdoutDestination())
-		} else if strings.HasPrefix(outputPath, "http://") || strings.HasPrefix(outputPath, "https://") {
-			destinations = append(destinations, NewHTTPDestination(outputPath))
-		} else {
-			// File destination - include formatter name in filename
-			timestamp := time.Now().Format("20060102_150405")
-			filename := fmt.Sprintf("%s_%s_%s.log", timestamp, formatterName, "incident")
-			filePath := filepath.Join(outputPath, filename)
-
-			dest, err := NewFileDestination(filePath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create file destination: %w", err)
-			}
-			destinations = append(destinations, dest)
-		}
-
-		chain.AddFormatter(formatter, destinations...)
+		// Add formatter with all configured emitters
+		chain.AddFormatter(formatter, emitters...)
 	}
 
 	return chain, nil

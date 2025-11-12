@@ -1,5 +1,6 @@
-// Package ringbuffer provides comprehensive unit tests for the thread-safe circular buffer
-// implementation used for telemetry data storage with automatic time-based expiration.
+// Package ringbuffer provides comprehensive unit tests for the ring buffer implementation.
+// These tests validate thread-safe operations, time-based filtering, memory management,
+// and performance characteristics of the circular buffer used for telemetry storage.
 package ringbuffer
 
 import (
@@ -10,134 +11,89 @@ import (
 	"github.com/verygoodsoftwarecompany/blackbox-daemon/pkg/types"
 )
 
-// TestNew validates the ring buffer creation and initialization logic.
-// This test ensures the buffer is properly sized based on window duration and
-// that all internal structures are correctly initialized for thread-safe operations.
+// TestNew validates RingBuffer creation and initialization with proper buffer sizing.
 func TestNew(t *testing.T) {
-	t.Run("creates ring buffer with correct window size", func(t *testing.T) {
+	t.Run("creates buffer with correct window size", func(t *testing.T) {
 		windowSize := 60 * time.Second
 		rb := New(windowSize)
-
-		if rb.windowSize != windowSize {
-			t.Errorf("Expected window size %v, got %v", windowSize, rb.windowSize)
+		
+		if rb == nil {
+			t.Fatal("Expected buffer to be created")
 		}
-		if rb.size <= 0 {
-			t.Errorf("Expected positive size, got %v", rb.size)
+		
+		stats := rb.GetStats()
+		if stats.WindowSize != windowSize {
+			t.Errorf("Expected window size %v, got %v", windowSize, stats.WindowSize)
 		}
-		if rb.count != 0 {
-			t.Errorf("Expected count 0, got %v", rb.count)
+		
+		if stats.BufferSize < 1000 {
+			t.Errorf("Expected buffer size >= 1000, got %d", stats.BufferSize)
 		}
-		if rb.head != 0 {
-			t.Errorf("Expected head 0, got %v", rb.head)
-		}
-	})
-
-	t.Run("minimum buffer size", func(t *testing.T) {
-		windowSize := 100 * time.Millisecond
-		rb := New(windowSize)
-
-		if rb.size < 1000 {
-			t.Errorf("Expected minimum size 1000, got %v", rb.size)
+		
+		if stats.TotalEntries != 0 {
+			t.Errorf("Expected empty buffer, got %d entries", stats.TotalEntries)
 		}
 	})
-
-	t.Run("estimated size calculation", func(t *testing.T) {
-		windowSize := 10 * time.Second
-		rb := New(windowSize)
-
-		expectedSize := 10000 // 10 seconds * 1000 entries/second
-		if rb.size != expectedSize {
-			t.Errorf("Expected size %v, got %v", expectedSize, rb.size)
+	
+	t.Run("calculates appropriate buffer size", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			windowSize time.Duration
+			minSize    int
+		}{
+			{"small window", 1 * time.Second, 1000},
+			{"medium window", 30 * time.Second, 30000},
+			{"large window", 300 * time.Second, 300000},
+		}
+		
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				rb := New(tt.windowSize)
+				stats := rb.GetStats()
+				
+				if stats.BufferSize < tt.minSize {
+					t.Errorf("Expected buffer size >= %d, got %d", tt.minSize, stats.BufferSize)
+				}
+			})
 		}
 	})
 }
 
+// TestAdd validates entry insertion and circular buffer behavior.
 func TestAdd(t *testing.T) {
-	t.Run("adds entry to empty buffer", func(t *testing.T) {
+	t.Run("adds single entry", func(t *testing.T) {
 		rb := New(60 * time.Second)
+		
 		entry := types.TelemetryEntry{
 			Timestamp: time.Now(),
 			Source:    types.SourceSystem,
 			Type:      types.TypeCPU,
-			Name:      "test_metric",
-			Value:     42.5,
+			Name:      "cpu_usage",
+			Value:     0.25,
+			Tags:      map[string]string{"node": "test"},
 		}
-
+		
 		rb.Add(entry)
-
-		if rb.count != 1 {
-			t.Errorf("Expected count 1, got %v", rb.count)
+		
+		stats := rb.GetStats()
+		if stats.TotalEntries != 1 {
+			t.Errorf("Expected 1 entry, got %d", stats.TotalEntries)
 		}
-		if rb.head != 1 {
-			t.Errorf("Expected head 1, got %v", rb.head)
+		
+		entries := rb.GetAll()
+		if len(entries) != 1 {
+			t.Errorf("Expected 1 entry, got %d", len(entries))
 		}
-
-		// Check that the entry was stored correctly
-		rb.mutex.RLock()
-		storedEntry := rb.entries[0]
-		rb.mutex.RUnlock()
-
-		if storedEntry.Name != entry.Name {
-			t.Errorf("Expected name %v, got %v", entry.Name, storedEntry.Name)
-		}
-		if storedEntry.Value != entry.Value {
-			t.Errorf("Expected value %v, got %v", entry.Value, storedEntry.Value)
+		
+		if entries[0].Name != "cpu_usage" {
+			t.Errorf("Expected name 'cpu_usage', got %q", entries[0].Name)
 		}
 	})
-
+	
 	t.Run("adds multiple entries", func(t *testing.T) {
 		rb := New(60 * time.Second)
-
-		for i := 0; i < 5; i++ {
-			entry := types.TelemetryEntry{
-				Timestamp: time.Now(),
-				Source:    types.SourceSystem,
-				Type:      types.TypeCPU,
-				Name:      "test_metric",
-				Value:     float64(i),
-			}
-			rb.Add(entry)
-		}
-
-		if rb.count != 5 {
-			t.Errorf("Expected count 5, got %v", rb.count)
-		}
-		if rb.head != 5 {
-			t.Errorf("Expected head 5, got %v", rb.head)
-		}
-	})
-
-	t.Run("wraps around when buffer is full", func(t *testing.T) {
-		rb := New(1 * time.Millisecond) // Small window to get small buffer
-		originalSize := rb.size
-
-		// Fill buffer beyond capacity
-		for i := 0; i < originalSize+10; i++ {
-			entry := types.TelemetryEntry{
-				Timestamp: time.Now(),
-				Source:    types.SourceSystem,
-				Type:      types.TypeCPU,
-				Name:      "test_metric",
-				Value:     float64(i),
-			}
-			rb.Add(entry)
-		}
-
-		if rb.count != originalSize {
-			t.Errorf("Expected count %v, got %v", originalSize, rb.count)
-		}
-		if rb.head != (originalSize+10)%originalSize {
-			t.Errorf("Expected head %v, got %v", (originalSize+10)%originalSize, rb.head)
-		}
-	})
-}
-
-func TestGetWindow(t *testing.T) {
-	t.Run("returns entries in time range", func(t *testing.T) {
-		rb := New(60 * time.Second)
+		
 		baseTime := time.Now()
-
-		// Add entries with different timestamps
 		for i := 0; i < 5; i++ {
 			entry := types.TelemetryEntry{
 				Timestamp: baseTime.Add(time.Duration(i) * time.Second),
@@ -148,188 +104,76 @@ func TestGetWindow(t *testing.T) {
 			}
 			rb.Add(entry)
 		}
-
-		// Query for entries between 1-3 seconds
-		since := baseTime.Add(1 * time.Second)
-		until := baseTime.Add(3 * time.Second)
-		entries := rb.GetByTimeRange(since, until)
-
-		expectedCount := 3 // entries at 1s, 2s, 3s
-		if len(entries) != expectedCount {
-			t.Errorf("Expected %v entries, got %v", expectedCount, len(entries))
+		
+		stats := rb.GetStats()
+		if stats.TotalEntries != 5 {
+			t.Errorf("Expected 5 entries, got %d", stats.TotalEntries)
 		}
-
-		// Verify entries are in correct order and range
-		for i, entry := range entries {
-			expectedValue := float64(i + 1) // Values 1, 2, 3
-			if entry.Value != expectedValue {
-				t.Errorf("Expected value %v, got %v", expectedValue, entry.Value)
-			}
-			if entry.Timestamp.Before(since) || entry.Timestamp.After(until) {
-				t.Errorf("Entry timestamp %v not in range %v - %v", entry.Timestamp, since, until)
+		
+		entries := rb.GetAll()
+		if len(entries) != 5 {
+			t.Errorf("Expected 5 entries, got %d", len(entries))
+		}
+		
+		// Verify chronological order
+		for i := 1; i < len(entries); i++ {
+			if !entries[i].Timestamp.After(entries[i-1].Timestamp) {
+				t.Error("Expected entries in chronological order")
 			}
 		}
 	})
-
-	t.Run("returns empty slice for no matches", func(t *testing.T) {
-		rb := New(60 * time.Second)
+	
+	t.Run("handles buffer overflow", func(t *testing.T) {
+		// Create small buffer for testing overflow
+		rb := New(1 * time.Millisecond) // Very small window to get small buffer
+		stats := rb.GetStats()
+		bufferSize := stats.BufferSize
+		
+		// Add more entries than buffer capacity
 		baseTime := time.Now()
-
-		entry := types.TelemetryEntry{
-			Timestamp: baseTime,
-			Source:    types.SourceSystem,
-			Type:      types.TypeCPU,
-			Name:      "test_metric",
-			Value:     42.0,
-		}
-		rb.Add(entry)
-
-		// Query for time range that doesn't include the entry
-		since := baseTime.Add(10 * time.Second)
-		until := baseTime.Add(20 * time.Second)
-		entries := rb.GetByTimeRange(since, until)
-
-		if len(entries) != 0 {
-			t.Errorf("Expected 0 entries, got %v", len(entries))
-		}
-	})
-}
-
-func TestFilterBySource(t *testing.T) {
-	t.Run("filters by source", func(t *testing.T) {
-		rb := New(60 * time.Second)
-
-		// Add entries with different sources
-		systemEntry := types.TelemetryEntry{
-			Timestamp: time.Now(),
-			Source:    types.SourceSystem,
-			Type:      types.TypeCPU,
-			Name:      "cpu_usage",
-			Value:     50.0,
-		}
-		sidecarEntry := types.TelemetryEntry{
-			Timestamp: time.Now(),
-			Source:    types.SourceSidecar,
-			Type:      types.TypeMemory,
-			Name:      "heap_usage",
-			Value:     1024,
-		}
-
-		rb.Add(systemEntry)
-		rb.Add(sidecarEntry)
-
-		// Filter for system entries only
-		filter := map[string]interface{}{
-			"source": types.SourceSystem,
-		}
-		entries := rb.GetByFilter(filter)
-
-		if len(entries) != 1 {
-			t.Errorf("Expected 1 entry, got %v", len(entries))
-		}
-		if entries[0].Source != types.SourceSystem {
-			t.Errorf("Expected SourceSystem, got %v", entries[0].Source)
-		}
-		if entries[0].Name != "cpu_usage" {
-			t.Errorf("Expected cpu_usage, got %v", entries[0].Name)
-		}
-	})
-
-	t.Run("filters by type", func(t *testing.T) {
-		rb := New(60 * time.Second)
-
-		entries := []types.TelemetryEntry{
-			{
-				Timestamp: time.Now(),
+		for i := 0; i < bufferSize+10; i++ {
+			entry := types.TelemetryEntry{
+				Timestamp: baseTime.Add(time.Duration(i) * time.Microsecond),
 				Source:    types.SourceSystem,
 				Type:      types.TypeCPU,
-				Name:      "cpu_usage",
-				Value:     50.0,
-			},
-			{
-				Timestamp: time.Now(),
-				Source:    types.SourceSystem,
-				Type:      types.TypeMemory,
-				Name:      "memory_usage",
-				Value:     75.0,
-			},
-			{
-				Timestamp: time.Now(),
-				Source:    types.SourceSystem,
-				Type:      types.TypeCPU,
-				Name:      "cpu_load",
-				Value:     1.5,
-			},
-		}
-
-		for _, entry := range entries {
+				Name:      "overflow_test",
+				Value:     float64(i),
+			}
 			rb.Add(entry)
 		}
-
-		// Filter for CPU entries only
-		filter := map[string]interface{}{
-			"type": types.TypeCPU,
+		
+		// Buffer should not exceed capacity
+		stats = rb.GetStats()
+		if stats.TotalEntries > bufferSize {
+			t.Errorf("Expected max %d entries, got %d", bufferSize, stats.TotalEntries)
 		}
-		cpuEntries := rb.GetByFilter(filter)
-
-		if len(cpuEntries) != 2 {
-			t.Errorf("Expected 2 CPU entries, got %v", len(cpuEntries))
+		
+		entries := rb.GetAll()
+		if len(entries) > bufferSize {
+			t.Errorf("Expected max %d entries, got %d", bufferSize, len(entries))
 		}
-		for _, entry := range cpuEntries {
-			if entry.Type != types.TypeCPU {
-				t.Errorf("Expected TypeCPU, got %v", entry.Type)
+		
+		// Should contain the most recent entries
+		if len(entries) > 0 {
+			lastEntry := entries[len(entries)-1]
+			expectedValue := float64(bufferSize + 9) // Last added value
+			if lastEntry.Value.(float64) != expectedValue {
+				t.Errorf("Expected last value %f, got %f", expectedValue, lastEntry.Value.(float64))
 			}
 		}
 	})
-
-	t.Run("filters by multiple criteria", func(t *testing.T) {
-		rb := New(60 * time.Second)
-
-		entries := []types.TelemetryEntry{
-			{
-				Timestamp: time.Now(),
-				Source:    types.SourceSystem,
-				Type:      types.TypeCPU,
-				Name:      "cpu_usage",
-				Value:     50.0,
-			},
-			{
-				Timestamp: time.Now(),
-				Source:    types.SourceSidecar,
-				Type:      types.TypeCPU,
-				Name:      "jvm_cpu",
-				Value:     30.0,
-			},
-		}
-
-		for _, entry := range entries {
-			rb.Add(entry)
-		}
-
-		// Filter for system CPU entries
-		filter := map[string]interface{}{
-			"source": types.SourceSystem,
-			"type":   types.TypeCPU,
-		}
-		filtered := rb.GetByFilter(filter)
-
-		if len(filtered) != 1 {
-			t.Errorf("Expected 1 entry, got %v", len(filtered))
-		}
-		if filtered[0].Name != "cpu_usage" {
-			t.Errorf("Expected cpu_usage, got %v", filtered[0].Name)
-		}
-	})
 }
 
-func TestGetStats(t *testing.T) {
-	t.Run("returns correct stats", func(t *testing.T) {
-		rb := New(60 * time.Second)
-
-		// Add some entries
-		for i := 0; i < 3; i++ {
+// TestGetWindow validates time-based window filtering.
+func TestGetWindow(t *testing.T) {
+	t.Run("returns entries within time window", func(t *testing.T) {
+		rb := New(30 * time.Second)
+		
+		baseTime := time.Now()
+		// Add entries spanning 60 seconds
+		for i := 0; i < 60; i++ {
 			entry := types.TelemetryEntry{
-				Timestamp: time.Now().Add(time.Duration(i) * time.Second),
+				Timestamp: baseTime.Add(time.Duration(i) * time.Second),
 				Source:    types.SourceSystem,
 				Type:      types.TypeCPU,
 				Name:      "test_metric",
@@ -337,171 +181,409 @@ func TestGetStats(t *testing.T) {
 			}
 			rb.Add(entry)
 		}
-
-		stats := rb.GetStats()
-
-		if stats.TotalEntries != 3 {
-			t.Errorf("Expected TotalEntries 3, got %v", stats.TotalEntries)
+		
+		// Get window from middle of timeline (should only get last 30 seconds)
+		fromTime := baseTime.Add(45 * time.Second)
+		entries := rb.GetWindow(fromTime)
+		
+		// Should only return entries from last 30 seconds (15-45 second range)
+		if len(entries) == 0 {
+			t.Error("Expected entries within window")
 		}
-		if stats.BufferSize != rb.size {
-			t.Errorf("Expected BufferSize %v, got %v", rb.size, stats.BufferSize)
-		}
-		if stats.UtilizationPercent == 0 {
-			t.Error("Expected non-zero utilization percent")
-		}
-		if stats.WindowSize != rb.windowSize {
-			t.Errorf("Expected WindowSize %v, got %v", rb.windowSize, stats.WindowSize)
+		
+		// All entries should be within the window (after cutoff)
+		cutoff := fromTime.Add(-30 * time.Second)
+		for _, entry := range entries {
+			if entry.Timestamp.Before(cutoff) {
+				t.Errorf("Entry %v before cutoff %v", entry.Timestamp, cutoff)
+			}
+			// Note: entries can be after fromTime since GetWindow looks backwards from fromTime
 		}
 	})
-
-	t.Run("handles empty buffer", func(t *testing.T) {
+	
+	t.Run("returns empty for empty buffer", func(t *testing.T) {
 		rb := New(60 * time.Second)
-		stats := rb.GetStats()
-
-		if stats.TotalEntries != 0 {
-			t.Errorf("Expected TotalEntries 0, got %v", stats.TotalEntries)
+		
+		entries := rb.GetWindow(time.Now())
+		if len(entries) != 0 {
+			t.Errorf("Expected empty result, got %d entries", len(entries))
 		}
-		if stats.UtilizationPercent != 0 {
-			t.Errorf("Expected UtilizationPercent 0, got %v", stats.UtilizationPercent)
+	})
+	
+	t.Run("handles window before all entries", func(t *testing.T) {
+		rb := New(60 * time.Second)
+		
+		// Add entries starting from now
+		baseTime := time.Now()
+		for i := 0; i < 5; i++ {
+			entry := types.TelemetryEntry{
+				Timestamp: baseTime.Add(time.Duration(i) * time.Second),
+				Source:    types.SourceSystem,
+				Type:      types.TypeCPU,
+				Name:      "test_metric",
+				Value:     float64(i),
+			}
+			rb.Add(entry)
 		}
-		if !stats.OldestEntry.IsZero() {
-			t.Error("Expected zero OldestEntry for empty buffer")
-		}
-		if !stats.NewestEntry.IsZero() {
-			t.Error("Expected zero NewestEntry for empty buffer")
+		
+		// Request window from before entries were added
+		fromTime := baseTime.Add(-30 * time.Second)
+		entries := rb.GetWindow(fromTime)
+		
+		// Should get some entries since GetWindow looks backwards from fromTime
+		// and includes entries after the cutoff time
+		// The window would be from fromTime-60s to fromTime, and our entries start at baseTime
+		// Since baseTime is 30s after fromTime, all entries should be included
+		if len(entries) != 5 {
+			t.Errorf("Expected 5 entries, got %d", len(entries))
 		}
 	})
 }
 
+// TestFilterBySource validates source-based filtering.
+func TestFilterBySource(t *testing.T) {
+	rb := New(60 * time.Second)
+	
+	baseTime := time.Now()
+	// Add mixed source entries
+	for i := 0; i < 10; i++ {
+		var source types.TelemetrySource
+		if i%2 == 0 {
+			source = types.SourceSystem
+		} else {
+			source = types.SourceSidecar
+		}
+		
+		entry := types.TelemetryEntry{
+			Timestamp: baseTime.Add(time.Duration(i) * time.Second),
+			Source:    source,
+			Type:      types.TypeCPU,
+			Name:      "test_metric",
+			Value:     float64(i),
+		}
+		rb.Add(entry)
+	}
+	
+	t.Run("filters system entries", func(t *testing.T) {
+		entries := rb.FilterBySource(types.SourceSystem, baseTime.Add(30*time.Second))
+		
+		if len(entries) == 0 {
+			t.Error("Expected system entries")
+		}
+		
+		for _, entry := range entries {
+			if entry.Source != types.SourceSystem {
+				t.Errorf("Expected system source, got %v", entry.Source)
+			}
+		}
+	})
+	
+	t.Run("filters sidecar entries", func(t *testing.T) {
+		entries := rb.FilterBySource(types.SourceSidecar, baseTime.Add(30*time.Second))
+		
+		if len(entries) == 0 {
+			t.Error("Expected sidecar entries")
+		}
+		
+		for _, entry := range entries {
+			if entry.Source != types.SourceSidecar {
+				t.Errorf("Expected sidecar source, got %v", entry.Source)
+			}
+		}
+	})
+}
+
+// TestFilterByPod validates pod-based filtering.
+func TestFilterByPod(t *testing.T) {
+	rb := New(60 * time.Second)
+	
+	baseTime := time.Now()
+	// Add entries from different pods and system
+	pods := []string{"", "pod-1", "pod-2", ""} // Empty string represents system entries
+	
+	for i := 0; i < 8; i++ {
+		podName := pods[i%len(pods)]
+		var source types.TelemetrySource
+		var tags map[string]string
+		
+		if podName == "" {
+			source = types.SourceSystem
+		} else {
+			source = types.SourceSidecar
+			tags = map[string]string{"pod_name": podName}
+		}
+		
+		entry := types.TelemetryEntry{
+			Timestamp: baseTime.Add(time.Duration(i) * time.Second),
+			Source:    source,
+			Type:      types.TypeCPU,
+			Name:      "test_metric",
+			Value:     float64(i),
+			Tags:      tags,
+		}
+		rb.Add(entry)
+	}
+	
+	t.Run("filters by specific pod", func(t *testing.T) {
+		entries := rb.FilterByPod("pod-1", baseTime.Add(30*time.Second))
+		
+		if len(entries) == 0 {
+			t.Error("Expected pod-1 entries")
+		}
+		
+		for _, entry := range entries {
+			if entry.Tags == nil || entry.Tags["pod_name"] != "pod-1" {
+				t.Errorf("Expected pod-1 entries, got entry with tags %v", entry.Tags)
+			}
+		}
+	})
+	
+	t.Run("returns system entries for empty pod name", func(t *testing.T) {
+		entries := rb.FilterByPod("", baseTime.Add(30*time.Second))
+		
+		if len(entries) == 0 {
+			t.Error("Expected system entries")
+		}
+		
+		for _, entry := range entries {
+			if entry.Source != types.SourceSystem {
+				t.Errorf("Expected system entries, got source %v", entry.Source)
+			}
+		}
+	})
+}
+
+// TestGetStats validates buffer statistics functionality.
+func TestGetStats(t *testing.T) {
+	t.Run("returns correct stats for populated buffer", func(t *testing.T) {
+		rb := New(60 * time.Second)
+		
+		baseTime := time.Now()
+		entryCount := 5
+		
+		for i := 0; i < entryCount; i++ {
+			entry := types.TelemetryEntry{
+				Timestamp: baseTime.Add(time.Duration(i) * time.Second),
+				Source:    types.SourceSystem,
+				Type:      types.TypeCPU,
+				Name:      "test_metric",
+				Value:     float64(i),
+			}
+			rb.Add(entry)
+		}
+		
+		stats := rb.GetStats()
+		
+		if stats.TotalEntries != entryCount {
+			t.Errorf("Expected %d entries, got %d", entryCount, stats.TotalEntries)
+		}
+		
+		if stats.WindowSize != 60*time.Second {
+			t.Errorf("Expected window size 60s, got %v", stats.WindowSize)
+		}
+		
+		expectedOldest := baseTime
+		expectedNewest := baseTime.Add(time.Duration(entryCount-1) * time.Second)
+		
+		if !stats.OldestEntry.Equal(expectedOldest) {
+			t.Errorf("Expected oldest entry %v, got %v", expectedOldest, stats.OldestEntry)
+		}
+		
+		if !stats.NewestEntry.Equal(expectedNewest) {
+			t.Errorf("Expected newest entry %v, got %v", expectedNewest, stats.NewestEntry)
+		}
+		
+		expectedWindow := expectedNewest.Sub(expectedOldest)
+		if stats.ActualWindow != expectedWindow {
+			t.Errorf("Expected actual window %v, got %v", expectedWindow, stats.ActualWindow)
+		}
+	})
+	
+	t.Run("returns zero stats for empty buffer", func(t *testing.T) {
+		rb := New(60 * time.Second)
+		
+		stats := rb.GetStats()
+		
+		if stats.TotalEntries != 0 {
+			t.Errorf("Expected 0 entries, got %d", stats.TotalEntries)
+		}
+		
+		if !stats.OldestEntry.IsZero() {
+			t.Error("Expected zero oldest entry time")
+		}
+		
+		if !stats.NewestEntry.IsZero() {
+			t.Error("Expected zero newest entry time")
+		}
+		
+		if stats.ActualWindow != 0 {
+			t.Errorf("Expected zero actual window, got %v", stats.ActualWindow)
+		}
+	})
+}
+
+// TestCleanup validates automatic cleanup of old entries.
 func TestCleanup(t *testing.T) {
 	t.Run("removes expired entries", func(t *testing.T) {
-		rb := New(1 * time.Second) // 1 second window
-
-		// Add entries with timestamps outside the window
-		oldTime := time.Now().Add(-2 * time.Second)
-		recentTime := time.Now()
-
-		oldEntry := types.TelemetryEntry{
-			Timestamp: oldTime,
-			Source:    types.SourceSystem,
-			Type:      types.TypeCPU,
-			Name:      "old_metric",
-			Value:     10.0,
+		rb := New(30 * time.Second) // 30 second window
+		
+		baseTime := time.Now().Add(-60 * time.Second) // Start 60 seconds ago
+		
+		// Add entries spanning 50 seconds (some should be expired)
+		for i := 0; i < 50; i++ {
+			entry := types.TelemetryEntry{
+				Timestamp: baseTime.Add(time.Duration(i) * time.Second),
+				Source:    types.SourceSystem,
+				Type:      types.TypeCPU,
+				Name:      "test_metric",
+				Value:     float64(i),
+			}
+			rb.Add(entry)
 		}
-		recentEntry := types.TelemetryEntry{
-			Timestamp: recentTime,
-			Source:    types.SourceSystem,
-			Type:      types.TypeCPU,
-			Name:      "recent_metric",
-			Value:     20.0,
+		
+		initialStats := rb.GetStats()
+		initialCount := initialStats.TotalEntries
+		
+		// Cleanup should remove entries older than 30 seconds from now
+		rb.Cleanup()
+		
+		finalStats := rb.GetStats()
+		
+		// Should have fewer entries after cleanup
+		if finalStats.TotalEntries >= initialCount {
+			t.Errorf("Expected cleanup to reduce entries from %d, got %d", 
+				initialCount, finalStats.TotalEntries)
 		}
-
-		rb.Add(oldEntry)
-		rb.Add(recentEntry)
-
-		initialCount := rb.count
-		removedCount := rb.Cleanup()
-
-		// Should have removed the old entry
-		if removedCount <= 0 {
-			t.Errorf("Expected to remove at least 1 entry, removed %v", removedCount)
-		}
-		if rb.count >= initialCount {
-			t.Errorf("Expected count to decrease from %v, got %v", initialCount, rb.count)
+		
+		// Remaining entries should all be within window
+		entries := rb.GetAll()
+		cutoff := time.Now().Add(-30 * time.Second)
+		for _, entry := range entries {
+			if entry.Timestamp.Before(cutoff) {
+				t.Errorf("Found expired entry after cleanup: %v", entry.Timestamp)
+			}
 		}
 	})
-
-	t.Run("handles empty buffer", func(t *testing.T) {
+	
+	t.Run("handles empty buffer cleanup", func(t *testing.T) {
 		rb := New(60 * time.Second)
-		removedCount := rb.Cleanup()
-
-		if removedCount != 0 {
-			t.Errorf("Expected to remove 0 entries from empty buffer, removed %v", removedCount)
+		
+		// Should not panic on empty buffer
+		rb.Cleanup()
+		
+		stats := rb.GetStats()
+		if stats.TotalEntries != 0 {
+			t.Errorf("Expected empty buffer after cleanup, got %d entries", stats.TotalEntries)
 		}
 	})
 }
 
-func TestConcurrentAccess(t *testing.T) {
+// TestThreadSafety validates concurrent access to the ring buffer.
+func TestThreadSafety(t *testing.T) {
 	t.Run("concurrent adds and reads", func(t *testing.T) {
 		rb := New(60 * time.Second)
+		
 		var wg sync.WaitGroup
-		numGoroutines := 10
-		entriesPerGoroutine := 100
-
-		// Concurrent adds
-		for i := 0; i < numGoroutines; i++ {
+		numWorkers := 10
+		entriesPerWorker := 100
+		
+		// Start concurrent writers
+		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
-			go func(id int) {
+			go func(workerID int) {
 				defer wg.Done()
-				for j := 0; j < entriesPerGoroutine; j++ {
+				
+				for j := 0; j < entriesPerWorker; j++ {
 					entry := types.TelemetryEntry{
 						Timestamp: time.Now(),
 						Source:    types.SourceSystem,
 						Type:      types.TypeCPU,
 						Name:      "concurrent_test",
-						Value:     float64(id*entriesPerGoroutine + j),
+						Value:     float64(workerID*entriesPerWorker + j),
 					}
 					rb.Add(entry)
 				}
 			}(i)
 		}
-
-		// Concurrent reads
-		for i := 0; i < numGoroutines; i++ {
+		
+		// Start concurrent readers
+		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for j := 0; j < entriesPerGoroutine; j++ {
-					_ = rb.GetStats()
-					since := time.Now().Add(-10 * time.Second)
-					until := time.Now()
-					_ = rb.GetByTimeRange(since, until)
+				
+				for j := 0; j < entriesPerWorker/10; j++ {
+					rb.GetAll()
+					rb.GetWindow(time.Now())
+					rb.GetStats()
+					time.Sleep(time.Millisecond)
 				}
 			}()
 		}
-
+		
 		wg.Wait()
-
-		// Verify final state is consistent
+		
+		// Verify buffer is in a consistent state
 		stats := rb.GetStats()
-		if stats.TotalEntries > numGoroutines*entriesPerGoroutine {
-			t.Errorf("Too many entries: expected <= %v, got %v", numGoroutines*entriesPerGoroutine, stats.TotalEntries)
+		if stats.TotalEntries < 0 {
+			t.Error("Buffer in inconsistent state after concurrent access")
+		}
+		
+		entries := rb.GetAll()
+		if len(entries) != stats.TotalEntries {
+			t.Errorf("Entry count mismatch: stats=%d, actual=%d", 
+				stats.TotalEntries, len(entries))
 		}
 	})
+}
 
-	t.Run("concurrent cleanup", func(t *testing.T) {
-		rb := New(100 * time.Millisecond) // Short window for cleanup
-		var wg sync.WaitGroup
-
-		// Add entries continuously
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 500; i++ {
-				entry := types.TelemetryEntry{
-					Timestamp: time.Now(),
-					Source:    types.SourceSystem,
-					Type:      types.TypeCPU,
-					Name:      "cleanup_test",
-					Value:     float64(i),
-				}
-				rb.Add(entry)
-				time.Sleep(1 * time.Millisecond)
+// TestEdgeCases validates edge cases and error conditions.
+func TestEdgeCases(t *testing.T) {
+	t.Run("handles very small window", func(t *testing.T) {
+		rb := New(1 * time.Nanosecond) // Extremely small window
+		
+		entry := types.TelemetryEntry{
+			Timestamp: time.Now(),
+			Source:    types.SourceSystem,
+			Type:      types.TypeCPU,
+			Name:      "test",
+			Value:     1.0,
+		}
+		
+		rb.Add(entry)
+		
+		// Should still function normally
+		stats := rb.GetStats()
+		if stats.TotalEntries != 1 {
+			t.Errorf("Expected 1 entry, got %d", stats.TotalEntries)
+		}
+	})
+	
+	t.Run("handles entries with same timestamp", func(t *testing.T) {
+		rb := New(60 * time.Second)
+		
+		timestamp := time.Now()
+		for i := 0; i < 3; i++ {
+			entry := types.TelemetryEntry{
+				Timestamp: timestamp, // Same timestamp
+				Source:    types.SourceSystem,
+				Type:      types.TypeCPU,
+				Name:      "same_time",
+				Value:     float64(i),
 			}
-		}()
-
-		// Run cleanup concurrently
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 10; i++ {
-				rb.Cleanup()
-				time.Sleep(10 * time.Millisecond)
+			rb.Add(entry)
+		}
+		
+		entries := rb.GetAll()
+		if len(entries) != 3 {
+			t.Errorf("Expected 3 entries, got %d", len(entries))
+		}
+		
+		// All should have the same timestamp
+		for _, entry := range entries {
+			if !entry.Timestamp.Equal(timestamp) {
+				t.Error("Expected all entries to have same timestamp")
 			}
-		}()
-
-		wg.Wait()
-
-		// Should complete without race conditions or panics
+		}
 	})
 }

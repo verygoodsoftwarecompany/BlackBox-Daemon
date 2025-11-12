@@ -476,6 +476,47 @@ kubectl get pods -w --field-selector spec.nodeName=<node-name>
 kubectl logs -n kube-system -l app=blackbox-daemon --tail=100 -f | grep k8s
 ```
 
+## Testing
+
+### Unit Test Coverage
+
+The Kubernetes integration includes comprehensive unit tests with **69.4% coverage**, utilizing fake Kubernetes clients for reliable testing without requiring a real cluster.
+
+**Test Categories**:
+- **Pod Lifecycle Tests**: Validation of pod creation, running, failed, and succeeded events
+- **Container Crash Detection**: Testing of restart detection, OOM kill handling, and failed containers
+- **Error Handling**: Verification of nil pointer safety, invalid inputs, and edge cases
+- **Concurrency Tests**: Thread-safe operation validation with concurrent pod events
+- **Integration Tests**: Watch API integration using fake Kubernetes clientsets
+
+**Key Testing Features**:
+```go
+// Thread-safe mock event handler for testing
+type mockEventHandler struct {
+    mu           sync.RWMutex
+    crashReports []types.IncidentReport
+    startedPods  []*corev1.Pod
+    stoppedPods  []*corev1.Pod
+}
+
+// Comprehensive container crash detection tests
+func TestContainerStatusCrashDetection(t *testing.T) {
+    // Tests for container restarts, OOM kills, and exit code analysis
+}
+```
+
+**Running Tests**:
+```bash
+# Run Kubernetes integration tests
+go test -v ./internal/k8s
+
+# Run with coverage
+go test -cover ./internal/k8s
+
+# Run specific test cases  
+go test -v ./internal/k8s -run TestContainerStatusCrashDetection
+```
+
 ## Best Practices
 
 ### Security

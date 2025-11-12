@@ -21,8 +21,6 @@ This directory contains comprehensive technical documentation for the BlackBox-D
 - [**API Server**](components/api.md) - REST API for sidecar communication
 - [**Metrics Collector**](components/metrics.md) - Prometheus metrics and observability
 - [**Output Formatters**](components/formatter.md) - Data formatting and output destinations
-- [**Metrics Collector**](components/metrics-collector.md) - Prometheus metrics framework
-- [**Formatter Chain**](components/formatter-chain.md) - Configurable output formatting
 
 ## Integration Documentation
 

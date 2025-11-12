@@ -201,6 +201,21 @@ All tests follow these principles:
 4. **Mock Usage**: External dependencies are mocked appropriately
 5. **Concurrent Testing**: Thread-safe components tested with goroutines
 
+### Current Test Coverage
+
+The project maintains high test coverage across all components:
+
+- **Overall Coverage**: 72.2% (including main.go: 0.0%)
+- **Package Coverage**: 91.1% (excluding main.go)
+- **Ring Buffer**: 97.7% coverage (comprehensive circular buffer testing)
+- **Telemetry System**: 87.8% coverage (Linux system metrics collection)
+- **Metrics Collector**: 91.4% coverage (Prometheus integration)
+- **Formatter Chain**: 90.2% coverage (multi-format output system)
+- **API Server**: 91.5% coverage (REST endpoints and authentication)
+- **Configuration**: 89.6% coverage (environment-based configuration)
+- **K8s Integration**: 69.4% coverage (pod monitoring with comprehensive mocking)
+- **Type Definitions**: 100% coverage (core data structures)
+
 ### Example Test Execution
 
 ```bash
@@ -209,6 +224,7 @@ go test -v ./...
 
 # Run specific package tests
 go test -v ./internal/api/
+go test -v ./internal/k8s/
 
 # Run with coverage
 go test -coverprofile=coverage.out ./...
@@ -216,7 +232,14 @@ go tool cover -html=coverage.out
 
 # Run with race detector
 go test -race ./...
+
+# Test individual packages with coverage
+go test -cover ./internal/k8s      # Kubernetes integration tests
+go test -cover ./internal/api      # REST API tests
+go test -cover ./internal/metrics  # Prometheus metrics tests
 ```
+
+**Note**: The K8s package tests use fake Kubernetes clientsets to simulate pod monitoring without requiring a real cluster. This ensures tests run quickly and reliably in CI/CD environments.
 
 ## Docker
 

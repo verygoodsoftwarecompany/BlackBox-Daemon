@@ -1,3 +1,6 @@
+// Package config provides comprehensive unit tests for configuration loading and validation.
+// These tests verify environment variable parsing, default value handling, validation rules,
+// and configuration object creation for the BlackBox-Daemon system.
 package config
 
 import (
@@ -5,8 +8,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/verygoodsoftwarecompany/blackbox-daemon/pkg/emitter"
 )
 
+// defaultTestEmitters returns the default emitter configuration for tests.
+func defaultTestEmitters() []emitter.EmitterConfig {
+	return []emitter.EmitterConfig{
+		{
+			Type: "file",
+			Config: map[string]interface{}{
+				"path":        "/tmp/test.log",
+				"create_dirs": true,
+				"append":      true,
+			},
+		},
+	}
+}
+
+// TestLoadConfig validates configuration loading from environment variables and defaults.
 func TestLoadConfig(t *testing.T) {
 	// Save original environment
 	originalEnv := make(map[string]string)
@@ -218,6 +238,7 @@ func TestLoadConfig(t *testing.T) {
 	})
 }
 
+// TestValidate validates configuration validation rules and error conditions.
 func TestValidate(t *testing.T) {
 	t.Run("validates valid config", func(t *testing.T) {
 		config := &Config{
@@ -228,6 +249,7 @@ func TestValidate(t *testing.T) {
 			MetricsPort:        9090,
 			OutputFormatters:   []string{"json"},
 			OutputPath:         "/var/log/blackbox",
+			Emitters:           defaultTestEmitters(),
 			LogLevel:           "info",
 			SwaggerEnable:      false,
 			LogJSON:           true,
@@ -375,6 +397,7 @@ func TestValidate(t *testing.T) {
 					APIPort:            8080,
 					MetricsPort:        9090,
 					OutputFormatters:   []string{"default"},
+					Emitters:           defaultTestEmitters(),
 					LogLevel:           level,
 				}
 				

@@ -145,6 +145,11 @@ func (pw *PodWatcher) watchPods(ctx context.Context, fieldSelector string) error
 // handlePodEvent processes pod status changes and generates incident reports
 // for failed pods or crashed containers.
 func (pw *PodWatcher) handlePodEvent(pod *corev1.Pod) {
+	// Validate inputs
+	if pod == nil || pw.eventHandler == nil {
+		return
+	}
+	
 	switch pod.Status.Phase {
 	case corev1.PodRunning:
 		pw.eventHandler.OnPodStart(pod)
@@ -178,14 +183,21 @@ func (pw *PodWatcher) handlePodEvent(pod *corev1.Pod) {
 
 // checkContainerStatuses examines individual container statuses for crashes
 func (pw *PodWatcher) checkContainerStatuses(pod *corev1.Pod) {
+	// Validate pod is not nil
+	if pod == nil {
+		return
+	}
+	
 	for _, containerStatus := range pod.Status.ContainerStatuses {
 		// Check for restarts indicating crashes
 		if containerStatus.RestartCount > 0 && containerStatus.State.Running != nil {
 			// Container has been restarted
 			var reason, message string
+			var exitCode int32
 			if containerStatus.LastTerminationState.Terminated != nil {
 				reason = containerStatus.LastTerminationState.Terminated.Reason
 				message = containerStatus.LastTerminationState.Terminated.Message
+				exitCode = containerStatus.LastTerminationState.Terminated.ExitCode
 			}
 
 			var incidentType types.IncidentType = types.IncidentCrash
@@ -209,7 +221,7 @@ func (pw *PodWatcher) checkContainerStatuses(pod *corev1.Pod) {
 				Context: map[string]interface{}{
 					"container_name": containerStatus.Name,
 					"restart_count":  containerStatus.RestartCount,
-					"exit_code":      containerStatus.LastTerminationState.Terminated.ExitCode,
+					"exit_code":      exitCode,
 					"reason":         reason,
 					"message":        message,
 					"started_at":     containerStatus.State.Running.StartedAt,

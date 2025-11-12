@@ -3,11 +3,14 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/verygoodsoftwarecompany/blackbox-daemon/pkg/emitter"
 )
 
 // Config holds all configuration parameters for the BlackBox daemon.
@@ -47,6 +50,10 @@ type Config struct {
 	// OutputPath is the directory or destination for incident reports
 	OutputPath string `json:"output_path"`
 
+	// Emitter configuration - controls where formatted logs are emitted
+	// Emitters is a list of emitter configurations for sending formatted logs to various destinations
+	Emitters []emitter.EmitterConfig `json:"emitters"`
+
 	// Logging configuration - controls daemon logging behavior
 	// LogLevel controls the verbosity of logging (debug, info, warn, error)
 	LogLevel string `json:"log_level"`
@@ -66,8 +73,18 @@ func DefaultConfig() *Config {
 		MetricsPath:        "/metrics",
 		OutputFormatters:   []string{"default"},
 		OutputPath:         "/var/log/blackbox",
-		LogLevel:           "info",
-		LogJSON:            true,
+		Emitters: []emitter.EmitterConfig{
+			{
+				Type: "file",
+				Config: map[string]interface{}{
+					"path":        "/var/log/blackbox/incidents.log",
+					"create_dirs": true,
+					"append":      true,
+				},
+			},
+		},
+		LogLevel: "info",
+		LogJSON:  true,
 	}
 }
 
@@ -154,6 +171,15 @@ func LoadFromEnv() (*Config, error) {
 		cfg.OutputPath = val
 	}
 
+	// Emitter configuration
+	if val := os.Getenv("BLACKBOX_EMITTERS"); val != "" {
+		var emitterConfigs []emitter.EmitterConfig
+		if err := json.Unmarshal([]byte(val), &emitterConfigs); err != nil {
+			return nil, fmt.Errorf("invalid BLACKBOX_EMITTERS JSON: %w", err)
+		}
+		cfg.Emitters = emitterConfigs
+	}
+
 	// Logging configuration
 	if val := os.Getenv("BLACKBOX_LOG_LEVEL"); val != "" {
 		cfg.LogLevel = val
@@ -206,6 +232,21 @@ func (c *Config) Validate() error {
 	}
 	if !validLogLevels[c.LogLevel] {
 		return fmt.Errorf("invalid log level: %s", c.LogLevel)
+	}
+
+	// Validate emitter configurations
+	if len(c.Emitters) == 0 {
+		return fmt.Errorf("at least one emitter must be configured")
+	}
+	
+	for i, emitterConfig := range c.Emitters {
+		if emitterConfig.Type == "" {
+			return fmt.Errorf("emitter %d: type is required", i)
+		}
+		// Validate that we can create the emitter (tests registry availability)
+		if _, err := emitter.CreateEmitter(emitterConfig); err != nil {
+			return fmt.Errorf("emitter %d (%s): %w", i, emitterConfig.Type, err)
+		}
 	}
 
 	return nil

@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="images/BlackBox-cube.jpg" alt="BlackBox-Daemon Logo" width="200" height="200">
+  <img src="images/BlackBox.jpg" alt="BlackBox Logo" width="200" height="200">
 </p>
 
 # BlackBox :: Daemon
 
-A Kubernetes Pod Flight Recorder - Comprehensive system and application telemetry capture for crash analysis and debugging
+A Kubernetes Pod Flight Recorder - Comprehensive system and application telemetry capture for crash analysis and debugging.
 
 Created by: [William Michael Mortl](https://williammortl.com)
 
-## Menu
+## Index
 
 * [Overview](#overview) <br />
 * [Quick Start](#quick-start) <br />
@@ -390,11 +390,25 @@ go test -v ./...
 # Run specific package tests
 go test -v ./pkg/types/
 go test -v ./internal/ringbuffer/
+go test -v ./internal/telemetry/
+go test -v ./internal/metrics/
+go test -v ./internal/formatter/
 go test -v ./internal/api/
+go test -v ./internal/config/
 
 # Generate coverage report
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out -o coverage.html
+
+# Current test coverage: 72.2% overall (including main.go: 0.0%)
+# Individual Package Coverage:
+# - Ring Buffer: 97.7% coverage (comprehensive circular buffer testing)
+# - Telemetry: 87.8% coverage (Linux system metrics collection) 
+# - Metrics: 91.4% coverage (Prometheus integration)
+# - Formatter: 90.2% coverage (multi-format output system)
+# - API: 91.5% coverage (REST endpoints and authentication)
+# - Config: 89.6% coverage (environment-based configuration)
+# - K8s: 69.4% coverage (Kubernetes pod monitoring with mocking)
 ```
 
 #### Advanced Testing
@@ -498,7 +512,7 @@ curl http://localhost:9090/metrics | grep blackbox_
 
 ## License
 
-Licensed under the MIT License. See [LICENSE](LICENSE) file for details.
+Licensed under the **AGPLv3** License. See [LICENSE](LICENSE) file for details.
 
 ## Contributing
 

@@ -1,634 +1,642 @@
+// Package metrics provides comprehensive unit tests for Prometheus metrics collection.
+// These tests validate metric registration, recording, HTTP server functionality, and
+// custom metric management for the BlackBox-Daemon monitoring system.
 package metrics
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func TestNew(t *testing.T) {
-	t.Run("creates metrics collector", func(t *testing.T) {
-		address := ":9090"
+// TestNewCollector validates collector creation and configuration.
+func TestNewCollector(t *testing.T) {
+	t.Run("creates collector with proper configuration", func(t *testing.T) {
+		port := 9090
 		path := "/metrics"
-
-		collector := New(address, path)
-
+		
+		collector := NewCollector(port, path)
+		
 		if collector == nil {
 			t.Fatal("Expected collector to be created")
 		}
-		if collector.address != address {
-			t.Errorf("Expected address %s, got %s", address, collector.address)
-		}
-		if collector.metricsPath != path {
-			t.Errorf("Expected path %s, got %s", path, collector.metricsPath)
-		}
+		
 		if collector.registry == nil {
 			t.Error("Expected registry to be initialized")
 		}
-	})
-}
-
-func TestRegisterDefaultMetrics(t *testing.T) {
-	t.Run("registers all default metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		// Test that default metrics are registered by checking if they can be gathered
-		metricFamilies, err := collector.registry.Gather()
-		if err != nil {
-			t.Fatalf("Failed to gather metrics: %v", err)
-		}
-
-		expectedMetrics := []string{
-			"blackbox_buffer_entries_total",
-			"blackbox_buffer_utilization_percent",
-			"blackbox_buffer_operations_total",
-			"blackbox_buffer_memory_bytes",
-			"blackbox_api_requests_total",
-			"blackbox_api_request_duration_seconds",
-			"blackbox_api_active_connections",
-			"blackbox_k8s_pods_total",
-			"blackbox_k8s_incidents_total",
-			"blackbox_k8s_pod_restarts_total",
-			"blackbox_telemetry_entries_total",
-			"blackbox_telemetry_collection_duration_seconds",
-			"blackbox_telemetry_errors_total",
-			"blackbox_cpu_usage_percent",
-			"blackbox_cpu_load_average",
-			"blackbox_memory_usage_bytes",
-			"blackbox_memory_utilization_percent",
-			"blackbox_network_bytes_total",
-			"blackbox_network_packets_total",
-			"blackbox_network_errors_total",
-			"blackbox_disk_operations_total",
-			"blackbox_disk_bytes_total",
-			"blackbox_disk_usage_bytes",
-		}
-
-		foundMetrics := make(map[string]bool)
-		for _, mf := range metricFamilies {
-			foundMetrics[mf.GetName()] = true
-		}
-
-		for _, expected := range expectedMetrics {
-			if !foundMetrics[expected] {
-				t.Errorf("Expected metric %s to be registered", expected)
-			}
-		}
-	})
-}
-
-func TestUpdateBufferMetrics(t *testing.T) {
-	t.Run("updates buffer metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.UpdateBufferMetrics(1500, 10000, 75.5, 2048000)
-
-		// Check that metrics were updated
-		metricValue := testutil.ToFloat64(collector.bufferEntries)
-		if metricValue != 1500 {
-			t.Errorf("Expected buffer entries 1500, got %v", metricValue)
-		}
-
-		utilizationValue := testutil.ToFloat64(collector.bufferUtilization)
-		if utilizationValue != 75.5 {
-			t.Errorf("Expected buffer utilization 75.5, got %v", utilizationValue)
-		}
-
-		memoryValue := testutil.ToFloat64(collector.bufferMemory)
-		if memoryValue != 2048000 {
-			t.Errorf("Expected buffer memory 2048000, got %v", memoryValue)
-		}
-	})
-}
-
-func TestIncrementBufferOperations(t *testing.T) {
-	t.Run("increments buffer operations", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		// Increment different operations
-		collector.IncrementBufferOperations("add")
-		collector.IncrementBufferOperations("add")
-		collector.IncrementBufferOperations("cleanup")
-
-		// Check that counters were incremented
-		addCounter, err := collector.bufferOperations.GetMetricWithLabelValues("add")
-		if err != nil {
-			t.Fatalf("Failed to get add counter: %v", err)
-		}
-		addValue := testutil.ToFloat64(addCounter)
-		if addValue != 2 {
-			t.Errorf("Expected add operations 2, got %v", addValue)
-		}
-
-		cleanupCounter, err := collector.bufferOperations.GetMetricWithLabelValues("cleanup")
-		if err != nil {
-			t.Fatalf("Failed to get cleanup counter: %v", err)
-		}
-		cleanupValue := testutil.ToFloat64(cleanupCounter)
-		if cleanupValue != 1 {
-			t.Errorf("Expected cleanup operations 1, got %v", cleanupValue)
-		}
-	})
-}
-
-func TestRecordAPIRequest(t *testing.T) {
-	t.Run("records API request metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		duration := 250 * time.Millisecond
-		collector.RecordAPIRequest("/api/v1/telemetry", "POST", 201, duration)
-
-		// Check request counter
-		requestCounter, err := collector.apiRequests.GetMetricWithLabelValues("/api/v1/telemetry", "POST", "201")
-		if err != nil {
-			t.Fatalf("Failed to get request counter: %v", err)
-		}
-		requestValue := testutil.ToFloat64(requestCounter)
-		if requestValue != 1 {
-			t.Errorf("Expected 1 request, got %v", requestValue)
-		}
-
-		// Check that duration histogram was updated
-		durationHistogram, err := collector.apiDuration.GetMetricWithLabelValues("/api/v1/telemetry")
-		if err != nil {
-			t.Fatalf("Failed to get duration histogram: %v", err)
+		
+		if collector.httpServer == nil {
+			t.Error("Expected HTTP server to be initialized")
 		}
 		
-		// The histogram should have recorded the duration
-		metric := &prometheus.HistogramVec{}
-		if durationHistogram != metric {
-			// We can't easily check exact histogram values without accessing internal state
-			// But we can verify it doesn't error
+		expectedAddr := fmt.Sprintf(":%d", port)
+		if collector.httpServer.Addr != expectedAddr {
+			t.Errorf("Expected server address %s, got %s", expectedAddr, collector.httpServer.Addr)
+		}
+		
+		// Verify all metric gauges are initialized
+		if collector.cpuUsageGauge == nil {
+			t.Error("Expected CPU usage gauge to be initialized")
+		}
+		if collector.memoryUsageGauge == nil {
+			t.Error("Expected memory usage gauge to be initialized")
+		}
+		if collector.networkBytesGauge == nil {
+			t.Error("Expected network bytes gauge to be initialized")
+		}
+		if collector.diskIOGauge == nil {
+			t.Error("Expected disk I/O gauge to be initialized")
+		}
+		if collector.processCountGauge == nil {
+			t.Error("Expected process count gauge to be initialized")
+		}
+		if collector.openFilesGauge == nil {
+			t.Error("Expected open files gauge to be initialized")
+		}
+		if collector.loadAvgGauge == nil {
+			t.Error("Expected load average gauge to be initialized")
+		}
+		
+		// Verify operational metrics are initialized
+		if collector.sidecarRequestsCounter == nil {
+			t.Error("Expected sidecar requests counter to be initialized")
+		}
+		if collector.incidentCounter == nil {
+			t.Error("Expected incident counter to be initialized")
+		}
+		if collector.bufferSizeGauge == nil {
+			t.Error("Expected buffer size gauge to be initialized")
+		}
+		if collector.bufferEntriesGauge == nil {
+			t.Error("Expected buffer entries gauge to be initialized")
+		}
+		
+		if collector.customMetrics == nil {
+			t.Error("Expected custom metrics map to be initialized")
 		}
 	})
 }
 
-func TestUpdateActiveConnections(t *testing.T) {
-	t.Run("updates active connections", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.UpdateActiveConnections(15)
-
-		connectionValue := testutil.ToFloat64(collector.apiConnections)
-		if connectionValue != 15 {
-			t.Errorf("Expected 15 active connections, got %v", connectionValue)
-		}
-
-		collector.UpdateActiveConnections(20)
-		connectionValue = testutil.ToFloat64(collector.apiConnections)
-		if connectionValue != 20 {
-			t.Errorf("Expected 20 active connections, got %v", connectionValue)
-		}
-	})
-}
-
-func TestUpdatePodMetrics(t *testing.T) {
-	t.Run("updates pod count metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.UpdatePodMetrics("running", 25)
-		collector.UpdatePodMetrics("pending", 3)
-		collector.UpdatePodMetrics("failed", 1)
-
-		runningValue := testutil.ToFloat64(collector.k8sPods.WithLabelValues("running"))
-		if runningValue != 25 {
-			t.Errorf("Expected 25 running pods, got %v", runningValue)
-		}
-
-		pendingValue := testutil.ToFloat64(collector.k8sPods.WithLabelValues("pending"))
-		if pendingValue != 3 {
-			t.Errorf("Expected 3 pending pods, got %v", pendingValue)
-		}
-	})
-}
-
-func TestIncrementIncidents(t *testing.T) {
-	t.Run("increments incident metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.IncrementIncidents("crash", "critical")
-		collector.IncrementIncidents("crash", "critical")
-		collector.IncrementIncidents("oom", "high")
-
-		crashCounter, err := collector.k8sIncidents.GetMetricWithLabelValues("crash", "critical")
-		if err != nil {
-			t.Fatalf("Failed to get crash counter: %v", err)
-		}
-		crashValue := testutil.ToFloat64(crashCounter)
-		if crashValue != 2 {
-			t.Errorf("Expected 2 crash incidents, got %v", crashValue)
-		}
-
-		oomCounter, err := collector.k8sIncidents.GetMetricWithLabelValues("oom", "high")
-		if err != nil {
-			t.Fatalf("Failed to get oom counter: %v", err)
-		}
-		oomValue := testutil.ToFloat64(oomCounter)
-		if oomValue != 1 {
-			t.Errorf("Expected 1 oom incident, got %v", oomValue)
-		}
-	})
-}
-
-func TestIncrementPodRestarts(t *testing.T) {
-	t.Run("increments pod restart counter", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.IncrementPodRestarts("production", "user-service-abc123")
-		collector.IncrementPodRestarts("production", "user-service-abc123")
-		collector.IncrementPodRestarts("staging", "test-service-xyz789")
-
-		prodCounter, err := collector.k8sPodRestarts.GetMetricWithLabelValues("production", "user-service-abc123")
-		if err != nil {
-			t.Fatalf("Failed to get production restart counter: %v", err)
-		}
-		prodValue := testutil.ToFloat64(prodCounter)
-		if prodValue != 2 {
-			t.Errorf("Expected 2 production restarts, got %v", prodValue)
-		}
-
-		stagingCounter, err := collector.k8sPodRestarts.GetMetricWithLabelValues("staging", "test-service-xyz789")
-		if err != nil {
-			t.Fatalf("Failed to get staging restart counter: %v", err)
-		}
-		stagingValue := testutil.ToFloat64(stagingCounter)
-		if stagingValue != 1 {
-			t.Errorf("Expected 1 staging restart, got %v", stagingValue)
-		}
-	})
-}
-
-func TestIncrementTelemetryEntries(t *testing.T) {
-	t.Run("increments telemetry entry counter", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.IncrementTelemetryEntries("system")
-		collector.IncrementTelemetryEntries("system")
-		collector.IncrementTelemetryEntries("sidecar")
-
-		systemCounter, err := collector.telemetryEntries.GetMetricWithLabelValues("system")
-		if err != nil {
-			t.Fatalf("Failed to get system counter: %v", err)
-		}
-		systemValue := testutil.ToFloat64(systemCounter)
-		if systemValue != 2 {
-			t.Errorf("Expected 2 system entries, got %v", systemValue)
-		}
-
-		sidecarCounter, err := collector.telemetryEntries.GetMetricWithLabelValues("sidecar")
-		if err != nil {
-			t.Fatalf("Failed to get sidecar counter: %v", err)
-		}
-		sidecarValue := testutil.ToFloat64(sidecarCounter)
-		if sidecarValue != 1 {
-			t.Errorf("Expected 1 sidecar entry, got %v", sidecarValue)
-		}
-	})
-}
-
-func TestRecordCollectionDuration(t *testing.T) {
-	t.Run("records collection duration", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		duration := 150 * time.Millisecond
-		collector.RecordCollectionDuration("system", duration)
-
-		// Verify histogram was updated (we can't easily check exact values)
-		systemHistogram, err := collector.telemetryDuration.GetMetricWithLabelValues("system")
-		if err != nil {
-			t.Fatalf("Failed to get system duration histogram: %v", err)
-		}
-		if systemHistogram == nil {
-			t.Error("Expected system duration histogram to exist")
-		}
-	})
-}
-
-func TestIncrementTelemetryErrors(t *testing.T) {
-	t.Run("increments telemetry error counter", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.IncrementTelemetryErrors("file_not_found")
-		collector.IncrementTelemetryErrors("file_not_found")
-		collector.IncrementTelemetryErrors("permission_denied")
-
-		fileErrorCounter, err := collector.telemetryErrors.GetMetricWithLabelValues("file_not_found")
-		if err != nil {
-			t.Fatalf("Failed to get file error counter: %v", err)
-		}
-		fileErrorValue := testutil.ToFloat64(fileErrorCounter)
-		if fileErrorValue != 2 {
-			t.Errorf("Expected 2 file errors, got %v", fileErrorValue)
-		}
-
-		permErrorCounter, err := collector.telemetryErrors.GetMetricWithLabelValues("permission_denied")
-		if err != nil {
-			t.Fatalf("Failed to get permission error counter: %v", err)
-		}
-		permErrorValue := testutil.ToFloat64(permErrorCounter)
-		if permErrorValue != 1 {
-			t.Errorf("Expected 1 permission error, got %v", permErrorValue)
-		}
-	})
-}
-
-func TestUpdateSystemMetrics(t *testing.T) {
-	t.Run("updates CPU metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.UpdateCPUUsage("0", 85.5)
-		collector.UpdateCPUUsage("1", 42.3)
-
-		cpu0Value := testutil.ToFloat64(collector.cpuUsage.WithLabelValues("0"))
-		if cpu0Value != 85.5 {
-			t.Errorf("Expected CPU0 usage 85.5, got %v", cpu0Value)
-		}
-
-		cpu1Value := testutil.ToFloat64(collector.cpuUsage.WithLabelValues("1"))
-		if cpu1Value != 42.3 {
-			t.Errorf("Expected CPU1 usage 42.3, got %v", cpu1Value)
-		}
-	})
-
-	t.Run("updates load average metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.UpdateLoadAverage("1m", 1.25)
-		collector.UpdateLoadAverage("5m", 1.10)
-
-		load1Value := testutil.ToFloat64(collector.cpuLoadAverage.WithLabelValues("1m"))
-		if load1Value != 1.25 {
-			t.Errorf("Expected 1m load 1.25, got %v", load1Value)
-		}
-
-		load5Value := testutil.ToFloat64(collector.cpuLoadAverage.WithLabelValues("5m"))
-		if load5Value != 1.10 {
-			t.Errorf("Expected 5m load 1.10, got %v", load5Value)
-		}
-	})
-
-	t.Run("updates memory metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.UpdateMemoryUsage("total", 8192000000)
-		collector.UpdateMemoryUsage("free", 2048000000)
-		collector.UpdateMemoryUtilization(75.5)
-
-		totalValue := testutil.ToFloat64(collector.memoryUsage.WithLabelValues("total"))
-		if totalValue != 8192000000 {
-			t.Errorf("Expected total memory 8192000000, got %v", totalValue)
-		}
-
-		utilizationValue := testutil.ToFloat64(collector.memoryUtilization)
-		if utilizationValue != 75.5 {
-			t.Errorf("Expected memory utilization 75.5, got %v", utilizationValue)
-		}
-	})
-
-	t.Run("updates network metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.UpdateNetworkBytes("eth0", "tx", 1048576)
-		collector.UpdateNetworkPackets("eth0", "rx", 1024)
-		collector.UpdateNetworkErrors("eth0", "tx", 5)
-
-		bytesValue := testutil.ToFloat64(collector.networkBytes.WithLabelValues("eth0", "tx"))
-		if bytesValue != 1048576 {
-			t.Errorf("Expected network bytes 1048576, got %v", bytesValue)
-		}
-
-		packetsValue := testutil.ToFloat64(collector.networkPackets.WithLabelValues("eth0", "rx"))
-		if packetsValue != 1024 {
-			t.Errorf("Expected network packets 1024, got %v", packetsValue)
-		}
-
-		errorsValue := testutil.ToFloat64(collector.networkErrors.WithLabelValues("eth0", "tx"))
-		if errorsValue != 5 {
-			t.Errorf("Expected network errors 5, got %v", errorsValue)
-		}
-	})
-
-	t.Run("updates disk metrics", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		collector.UpdateDiskOperations("sda", "read", 12345)
-		collector.UpdateDiskBytes("sda", "write", 67108864)
-		collector.UpdateDiskUsage("/", "used", 53687091200)
-
-		opsValue := testutil.ToFloat64(collector.diskOperations.WithLabelValues("sda", "read"))
-		if opsValue != 12345 {
-			t.Errorf("Expected disk operations 12345, got %v", opsValue)
-		}
-
-		bytesValue := testutil.ToFloat64(collector.diskBytes.WithLabelValues("sda", "write"))
-		if bytesValue != 67108864 {
-			t.Errorf("Expected disk bytes 67108864, got %v", bytesValue)
-		}
-
-		usageValue := testutil.ToFloat64(collector.diskUsage.WithLabelValues("/", "used"))
-		if usageValue != 53687091200 {
-			t.Errorf("Expected disk usage 53687091200, got %v", usageValue)
-		}
-	})
-}
-
-func TestRegisterCustomMetric(t *testing.T) {
-	t.Run("registers custom metric", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		customCounter := prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "test_custom_metric_total",
-			Help: "A test custom metric",
-		})
-
-		err := collector.RegisterCustomMetric("test_custom", customCounter)
-		if err != nil {
-			t.Fatalf("Failed to register custom metric: %v", err)
-		}
-
-		// Verify metric was registered
-		metricFamilies, err := collector.registry.Gather()
-		if err != nil {
-			t.Fatalf("Failed to gather metrics: %v", err)
-		}
-
-		found := false
-		for _, mf := range metricFamilies {
-			if mf.GetName() == "test_custom_metric_total" {
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			t.Error("Expected custom metric to be registered")
-		}
-	})
-
-	t.Run("rejects duplicate metric registration", func(t *testing.T) {
-		collector := New(":9090", "/metrics")
-
-		counter1 := prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "duplicate_metric_total",
-			Help: "First counter",
-		})
-		counter2 := prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "duplicate_metric_total", // Same name
-			Help: "Second counter",
-		})
-
-		err1 := collector.RegisterCustomMetric("duplicate1", counter1)
-		if err1 != nil {
-			t.Fatalf("Failed to register first metric: %v", err1)
-		}
-
-		err2 := collector.RegisterCustomMetric("duplicate2", counter2)
-		if err2 == nil {
-			t.Error("Expected error when registering duplicate metric")
-		}
-	})
-}
-
-func TestCollectorStart(t *testing.T) {
-	t.Run("starts HTTP server", func(t *testing.T) {
-		collector := New(":0", "/metrics") // Use port 0 for auto-assignment
-
+// TestStart validates HTTP server startup and shutdown behavior.
+func TestStart(t *testing.T) {
+	t.Run("starts and stops HTTP server", func(t *testing.T) {
+		collector := NewCollector(19090, "/metrics") // Use different port to avoid conflicts
+		
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-
-		// Start collector
-		errChan := make(chan error, 1)
+		
+		// Start in goroutine
+		errCh := make(chan error, 1)
 		go func() {
-			errChan <- collector.Start(ctx)
+			errCh <- collector.Start(ctx)
 		}()
-
-		// Give it time to start
-		time.Sleep(10 * time.Millisecond)
-
-		// Try to make a request (this might fail if port selection is random)
-		// In a real test, we'd need to get the actual port assigned
-
-		// Wait for shutdown
+		
+		// Give server time to start
+		time.Sleep(50 * time.Millisecond)
+		
+		// Try to connect to verify server is running
+		resp, err := http.Get("http://localhost:19090/")
+		if err == nil {
+			resp.Body.Close()
+		}
+		
+		// Wait for context cancellation and server shutdown
 		select {
-		case err := <-errChan:
-			if err != nil && err != context.Canceled && !strings.Contains(err.Error(), "Server closed") {
-				t.Errorf("Unexpected error: %v", err)
+		case err := <-errCh:
+			// Should be nil (clean shutdown) or http.ErrServerClosed
+			if err != nil && err != http.ErrServerClosed {
+				t.Errorf("Expected clean shutdown, got %v", err)
 			}
 		case <-time.After(200 * time.Millisecond):
-			t.Error("Server did not shut down within timeout")
+			t.Error("Server did not shut down within expected time")
 		}
 	})
-
-	t.Run("serves metrics endpoint", func(t *testing.T) {
-		collector := New(":0", "/metrics")
-
-		// We can test the handler directly without starting the server
-		req, err := http.NewRequest("GET", "/metrics", nil)
-		if err != nil {
-			t.Fatalf("Failed to create request: %v", err)
-		}
-
-		recorder := &testResponseWriter{
-			header: make(http.Header),
-		}
-
-		collector.handler.ServeHTTP(recorder, req)
-
-		if recorder.statusCode != http.StatusOK && recorder.statusCode == 0 {
-			// Status code 0 means it wasn't set, which indicates success
-		} else if recorder.statusCode != 0 && recorder.statusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %v", recorder.statusCode)
-		}
-
-		// Response should contain Prometheus metrics
-		if !strings.Contains(recorder.body, "# HELP") {
-			t.Error("Expected Prometheus metrics format in response")
+	
+	t.Run("handles context cancellation gracefully", func(t *testing.T) {
+		collector := NewCollector(19091, "/metrics")
+		
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+		
+		err := collector.Start(ctx)
+		// Should return without error due to immediate cancellation
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("Expected clean shutdown or server closed error, got %v", err)
 		}
 	})
 }
 
-// Test helper for HTTP response recording
-type testResponseWriter struct {
-	header     http.Header
-	body       string
-	statusCode int
-}
-
-func (rw *testResponseWriter) Header() http.Header {
-	return rw.header
-}
-
-func (rw *testResponseWriter) Write(data []byte) (int, error) {
-	rw.body += string(data)
-	return len(data), nil
-}
-
-func (rw *testResponseWriter) WriteHeader(statusCode int) {
-	rw.statusCode = statusCode
-}
-
-// Implement the io.StringWriter interface if needed
-func (rw *testResponseWriter) WriteString(s string) (int, error) {
-	rw.body += s
-	return len(s), nil
-}
-
-func TestMetricsIntegration(t *testing.T) {
-	t.Run("full metrics workflow", func(t *testing.T) {
-		collector := New(":0", "/metrics")
-
-		// Simulate various operations that would update metrics
-		collector.UpdateBufferMetrics(1500, 10000, 15.0, 2048000)
-		collector.IncrementBufferOperations("add")
-		collector.RecordAPIRequest("/api/v1/telemetry", "POST", 201, 50*time.Millisecond)
-		collector.UpdateActiveConnections(5)
-		collector.UpdatePodMetrics("running", 25)
-		collector.IncrementIncidents("crash", "high")
-		collector.IncrementPodRestarts("production", "test-pod")
-		collector.IncrementTelemetryEntries("system")
-		collector.RecordCollectionDuration("system", 10*time.Millisecond)
-		collector.IncrementTelemetryErrors("permission_denied")
-		collector.UpdateCPUUsage("0", 85.5)
-		collector.UpdateLoadAverage("1m", 1.25)
-		collector.UpdateMemoryUsage("total", 8192000000)
-		collector.UpdateMemoryUtilization(75.5)
-		collector.UpdateNetworkBytes("eth0", "tx", 1048576)
-		collector.UpdateDiskOperations("sda", "read", 12345)
-
-		// Gather all metrics
-		metricFamilies, err := collector.registry.Gather()
-		if err != nil {
-			t.Fatalf("Failed to gather metrics: %v", err)
+// TestRecordCPUUsage validates CPU metric recording.
+func TestRecordCPUUsage(t *testing.T) {
+	collector := NewCollector(9092, "/metrics")
+	
+	t.Run("records CPU usage metrics", func(t *testing.T) {
+		core := "cpu0"
+		usage := 75.5
+		
+		collector.RecordCPUUsage(core, usage)
+		
+		// Verify metric was recorded
+		value := testutil.ToFloat64(collector.cpuUsageGauge.WithLabelValues(core))
+		if value != usage {
+			t.Errorf("Expected CPU usage %v, got %v", usage, value)
 		}
-
-		// Should have metrics from all the updates above
-		if len(metricFamilies) == 0 {
-			t.Error("Expected metrics to be present")
+	})
+	
+	t.Run("records multiple cores independently", func(t *testing.T) {
+		cores := map[string]float64{
+			"cpu0": 45.2,
+			"cpu1": 67.8,
+			"cpu2": 23.1,
 		}
-
-		// Verify at least some key metrics exist
-		metricNames := make(map[string]bool)
-		for _, mf := range metricFamilies {
-			metricNames[mf.GetName()] = true
+		
+		for core, usage := range cores {
+			collector.RecordCPUUsage(core, usage)
 		}
-
-		requiredMetrics := []string{
-			"blackbox_buffer_entries_total",
-			"blackbox_api_requests_total",
-			"blackbox_cpu_usage_percent",
-			"blackbox_memory_utilization_percent",
-		}
-
-		for _, required := range requiredMetrics {
-			if !metricNames[required] {
-				t.Errorf("Expected metric %s to be present", required)
+		
+		for core, expectedUsage := range cores {
+			value := testutil.ToFloat64(collector.cpuUsageGauge.WithLabelValues(core))
+			if value != expectedUsage {
+				t.Errorf("Expected CPU usage for %s: %v, got %v", core, expectedUsage, value)
 			}
+		}
+	})
+}
+
+// TestRecordMemoryUsage validates memory metric recording.
+func TestRecordMemoryUsage(t *testing.T) {
+	collector := NewCollector(9093, "/metrics")
+	
+	t.Run("records memory usage metrics", func(t *testing.T) {
+		memTypes := map[string]uint64{
+			"total":     8589934592, // 8GB
+			"free":      2147483648, // 2GB
+			"available": 4294967296, // 4GB
+			"buffers":   536870912,  // 512MB
+			"cached":    1073741824, // 1GB
+		}
+		
+		for memType, bytes := range memTypes {
+			collector.RecordMemoryUsage(memType, bytes)
+		}
+		
+		for memType, expectedBytes := range memTypes {
+			value := testutil.ToFloat64(collector.memoryUsageGauge.WithLabelValues(memType))
+			if value != float64(expectedBytes) {
+				t.Errorf("Expected memory %s: %d, got %v", memType, expectedBytes, value)
+			}
+		}
+	})
+}
+
+// TestRecordNetworkBytes validates network metric recording.
+func TestRecordNetworkBytes(t *testing.T) {
+	collector := NewCollector(9094, "/metrics")
+	
+	t.Run("records network bytes metrics", func(t *testing.T) {
+		testCases := []struct {
+			iface     string
+			direction string
+			bytes     uint64
+		}{
+			{"eth0", "rx", 1048576}, // 1MB received
+			{"eth0", "tx", 2097152}, // 2MB transmitted
+			{"eth1", "rx", 524288},  // 512KB received
+			{"eth1", "tx", 1572864}, // 1.5MB transmitted
+		}
+		
+		for _, tc := range testCases {
+			collector.RecordNetworkBytes(tc.iface, tc.direction, tc.bytes)
+		}
+		
+		for _, tc := range testCases {
+			value := testutil.ToFloat64(collector.networkBytesGauge.WithLabelValues(tc.iface, tc.direction))
+			if value != float64(tc.bytes) {
+				t.Errorf("Expected network bytes for %s %s: %d, got %v", tc.iface, tc.direction, tc.bytes, value)
+			}
+		}
+	})
+}
+
+// TestRecordDiskIO validates disk I/O metric recording.
+func TestRecordDiskIO(t *testing.T) {
+	collector := NewCollector(9095, "/metrics")
+	
+	t.Run("records disk I/O metrics", func(t *testing.T) {
+		testCases := []struct {
+			device    string
+			direction string
+			bytes     uint64
+		}{
+			{"sda", "read", 10485760},  // 10MB read
+			{"sda", "write", 5242880},  // 5MB written
+			{"nvme0n1", "read", 20971520}, // 20MB read
+			{"nvme0n1", "write", 15728640}, // 15MB written
+		}
+		
+		for _, tc := range testCases {
+			collector.RecordDiskIO(tc.device, tc.direction, tc.bytes)
+		}
+		
+		for _, tc := range testCases {
+			value := testutil.ToFloat64(collector.diskIOGauge.WithLabelValues(tc.device, tc.direction))
+			if value != float64(tc.bytes) {
+				t.Errorf("Expected disk I/O for %s %s: %d, got %v", tc.device, tc.direction, tc.bytes, value)
+			}
+		}
+	})
+}
+
+// TestRecordProcessCount validates process count metric recording.
+func TestRecordProcessCount(t *testing.T) {
+	collector := NewCollector(9096, "/metrics")
+	
+	t.Run("records process count", func(t *testing.T) {
+		count := 267
+		collector.RecordProcessCount(count)
+		
+		value := testutil.ToFloat64(collector.processCountGauge)
+		if value != float64(count) {
+			t.Errorf("Expected process count %d, got %v", count, value)
+		}
+	})
+}
+
+// TestRecordOpenFiles validates open files metric recording.
+func TestRecordOpenFiles(t *testing.T) {
+	collector := NewCollector(9097, "/metrics")
+	
+	t.Run("records open files count", func(t *testing.T) {
+		count := 1024
+		collector.RecordOpenFiles(count)
+		
+		value := testutil.ToFloat64(collector.openFilesGauge)
+		if value != float64(count) {
+			t.Errorf("Expected open files count %d, got %v", count, value)
+		}
+	})
+}
+
+// TestRecordLoadAverage validates load average metric recording.
+func TestRecordLoadAverage(t *testing.T) {
+	collector := NewCollector(9098, "/metrics")
+	
+	t.Run("records load average metrics", func(t *testing.T) {
+		loads := map[string]float64{
+			"1min":  0.75,
+			"5min":  1.25,
+			"15min": 0.95,
+		}
+		
+		for period, load := range loads {
+			collector.RecordLoadAverage(period, load)
+		}
+		
+		for period, expectedLoad := range loads {
+			value := testutil.ToFloat64(collector.loadAvgGauge.WithLabelValues(period))
+			if value != expectedLoad {
+				t.Errorf("Expected load average for %s: %v, got %v", period, expectedLoad, value)
+			}
+		}
+	})
+}
+
+// TestIncrementSidecarRequests validates sidecar request counter.
+func TestIncrementSidecarRequests(t *testing.T) {
+	collector := NewCollector(9099, "/metrics")
+	
+	t.Run("increments sidecar requests", func(t *testing.T) {
+		// Should start at 0
+		initialValue := testutil.ToFloat64(collector.sidecarRequestsCounter)
+		if initialValue != 0 {
+			t.Errorf("Expected initial value 0, got %v", initialValue)
+		}
+		
+		// Increment multiple times
+		for i := 0; i < 5; i++ {
+			collector.IncrementSidecarRequests()
+		}
+		
+		finalValue := testutil.ToFloat64(collector.sidecarRequestsCounter)
+		if finalValue != 5 {
+			t.Errorf("Expected final value 5, got %v", finalValue)
+		}
+	})
+}
+
+// TestIncrementIncidents validates incident counter.
+func TestIncrementIncidents(t *testing.T) {
+	collector := NewCollector(9100, "/metrics")
+	
+	t.Run("increments incidents with labels", func(t *testing.T) {
+		incidents := []struct {
+			incidentType string
+			severity     string
+			count        int
+		}{
+			{"crash", "high", 3},
+			{"oom", "medium", 2},
+			{"timeout", "low", 1},
+		}
+		
+		for _, incident := range incidents {
+			for i := 0; i < incident.count; i++ {
+				collector.IncrementIncidents(incident.incidentType, incident.severity)
+			}
+		}
+		
+		for _, incident := range incidents {
+			value := testutil.ToFloat64(collector.incidentCounter.WithLabelValues(incident.incidentType, incident.severity))
+			if value != float64(incident.count) {
+				t.Errorf("Expected %s:%s incidents %d, got %v", incident.incidentType, incident.severity, incident.count, value)
+			}
+		}
+	})
+}
+
+// TestRecordBufferMetrics validates buffer metric recording.
+func TestRecordBufferMetrics(t *testing.T) {
+	collector := NewCollector(9101, "/metrics")
+	
+	t.Run("records buffer size", func(t *testing.T) {
+		sizeBytes := 2048576 // ~2MB
+		collector.RecordBufferSize(sizeBytes)
+		
+		value := testutil.ToFloat64(collector.bufferSizeGauge)
+		if value != float64(sizeBytes) {
+			t.Errorf("Expected buffer size %d, got %v", sizeBytes, value)
+		}
+	})
+	
+	t.Run("records buffer entries", func(t *testing.T) {
+		entries := 1500
+		collector.RecordBufferEntries(entries)
+		
+		value := testutil.ToFloat64(collector.bufferEntriesGauge)
+		if value != float64(entries) {
+			t.Errorf("Expected buffer entries %d, got %v", entries, value)
+		}
+	})
+}
+
+// TestCustomMetrics validates custom metric management.
+func TestCustomMetrics(t *testing.T) {
+	collector := NewCollector(9102, "/metrics")
+	
+	t.Run("registers custom counter", func(t *testing.T) {
+		name := "test_counter"
+		help := "Test counter metric"
+		labels := []string{"label1", "label2"}
+		
+		counter, err := collector.NewCustomCounter(name, help, labels)
+		if err != nil {
+			t.Fatalf("Failed to create custom counter: %v", err)
+		}
+		
+		if counter == nil {
+			t.Error("Expected counter to be created")
+		}
+		
+		// Check if metric is registered
+		_, exists := collector.GetCustomMetric(name)
+		if !exists {
+			t.Error("Expected custom metric to be registered")
+		}
+		
+		// Test counter functionality
+		counter.WithLabelValues("val1", "val2").Inc()
+		value := testutil.ToFloat64(counter.WithLabelValues("val1", "val2"))
+		if value != 1 {
+			t.Errorf("Expected counter value 1, got %v", value)
+		}
+	})
+	
+	t.Run("registers custom gauge", func(t *testing.T) {
+		name := "test_gauge"
+		help := "Test gauge metric"
+		labels := []string{"instance"}
+		
+		gauge, err := collector.NewCustomGauge(name, help, labels)
+		if err != nil {
+			t.Fatalf("Failed to create custom gauge: %v", err)
+		}
+		
+		if gauge == nil {
+			t.Error("Expected gauge to be created")
+		}
+		
+		// Test gauge functionality
+		testValue := 42.5
+		gauge.WithLabelValues("test-instance").Set(testValue)
+		value := testutil.ToFloat64(gauge.WithLabelValues("test-instance"))
+		if value != testValue {
+			t.Errorf("Expected gauge value %v, got %v", testValue, value)
+		}
+	})
+	
+	t.Run("registers custom histogram", func(t *testing.T) {
+		name := "test_histogram"
+		help := "Test histogram metric"
+		labels := []string{"method"}
+		buckets := []float64{0.1, 0.5, 1.0, 2.5, 5.0, 10.0}
+		
+		histogram, err := collector.NewCustomHistogram(name, help, labels, buckets)
+		if err != nil {
+			t.Fatalf("Failed to create custom histogram: %v", err)
+		}
+		
+		if histogram == nil {
+			t.Error("Expected histogram to be created")
+		}
+		
+		// Test histogram functionality
+		histogram.WithLabelValues("GET").Observe(0.75)
+		histogram.WithLabelValues("GET").Observe(1.5)
+		
+		// Check that observations were recorded (we can't easily test the exact count without more complex validation)
+		// Just verify the histogram exists and can accept observations without error
+		histogram.WithLabelValues("POST").Observe(2.3)
+		
+		// If we got here without panicking, the histogram is working correctly
+	})
+	
+	t.Run("prevents duplicate registration", func(t *testing.T) {
+		name := "duplicate_metric"
+		help := "Test duplicate metric"
+		
+		// Register first metric
+		_, err := collector.NewCustomCounter(name, help, []string{})
+		if err != nil {
+			t.Fatalf("Failed to register first metric: %v", err)
+		}
+		
+		// Try to register duplicate
+		_, err = collector.NewCustomCounter(name, help, []string{})
+		if err == nil {
+			t.Error("Expected error when registering duplicate metric")
+		}
+		
+		if !strings.Contains(err.Error(), "already registered") {
+			t.Errorf("Expected 'already registered' error, got: %v", err)
+		}
+	})
+	
+	t.Run("unregisters custom metrics", func(t *testing.T) {
+		name := "temp_metric"
+		help := "Temporary metric"
+		
+		// Register metric
+		_, err := collector.NewCustomCounter(name, help, []string{})
+		if err != nil {
+			t.Fatalf("Failed to register metric: %v", err)
+		}
+		
+		// Verify it exists
+		_, exists := collector.GetCustomMetric(name)
+		if !exists {
+			t.Error("Expected metric to be registered")
+		}
+		
+		// Unregister it
+		err = collector.UnregisterCustomMetric(name)
+		if err != nil {
+			t.Fatalf("Failed to unregister metric: %v", err)
+		}
+		
+		// Verify it's gone
+		_, exists = collector.GetCustomMetric(name)
+		if exists {
+			t.Error("Expected metric to be unregistered")
+		}
+	})
+	
+	t.Run("lists custom metrics", func(t *testing.T) {
+		// Register multiple metrics
+		metrics := []string{"metric_a", "metric_b", "metric_c"}
+		
+		for _, name := range metrics {
+			_, err := collector.NewCustomCounter(name, "Test metric", []string{})
+			if err != nil {
+				t.Fatalf("Failed to register metric %s: %v", name, err)
+			}
+		}
+		
+		// List metrics
+		listed := collector.ListCustomMetrics()
+		
+		// Should contain all registered metrics (may include others from previous tests)
+		for _, expected := range metrics {
+			found := false
+			for _, listed := range listed {
+				if listed == expected {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Expected metric %s to be listed", expected)
+			}
+		}
+	})
+}
+
+// TestMetricsHTTPEndpoint validates HTTP metrics endpoint.
+func TestMetricsHTTPEndpoint(t *testing.T) {
+	collector := NewCollector(19103, "/metrics")
+	
+	t.Run("serves metrics endpoint", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		
+		// Start server in background
+		go func() {
+			collector.Start(ctx)
+		}()
+		
+		// Give server time to start
+		time.Sleep(100 * time.Millisecond)
+		
+		// Record some test metrics
+		collector.RecordCPUUsage("cpu0", 50.0)
+		collector.IncrementSidecarRequests()
+		collector.RecordBufferEntries(100)
+		
+		// Make HTTP request to metrics endpoint
+		resp, err := http.Get("http://localhost:19103/metrics")
+		if err != nil {
+			t.Fatalf("Failed to get metrics: %v", err)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		}
+		
+		// Read response body
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Failed to read response: %v", err)
+		}
+		
+		bodyStr := string(body)
+		
+		// Verify some expected metrics are present
+		expectedMetrics := []string{
+			"blackbox_cpu_usage_percent",
+			"blackbox_sidecar_requests_total",
+			"blackbox_buffer_entries_total",
+		}
+		
+		for _, metric := range expectedMetrics {
+			if !strings.Contains(bodyStr, metric) {
+				t.Errorf("Expected metric %s to be present in response", metric)
+			}
+		}
+	})
+	
+	t.Run("serves root endpoint", func(t *testing.T) {
+		collector2 := NewCollector(19104, "/metrics") // Use different port
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		
+		// Start server in background
+		go func() {
+			collector2.Start(ctx)
+		}()
+		
+		// Give server time to start
+		time.Sleep(100 * time.Millisecond)
+		
+		// Make HTTP request to root endpoint
+		resp, err := http.Get("http://localhost:19104/")
+		if err != nil {
+			t.Fatalf("Failed to get root endpoint: %v", err)
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		}
+		
+		// Should contain HTML with link to metrics
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Failed to read response: %v", err)
+		}
+		
+		bodyStr := string(body)
+		if !strings.Contains(bodyStr, "BlackBox Daemon Metrics") {
+			t.Error("Expected root page to contain title")
+		}
+		
+		if !strings.Contains(bodyStr, "/metrics") {
+			t.Error("Expected root page to contain metrics link")
 		}
 	})
 }
